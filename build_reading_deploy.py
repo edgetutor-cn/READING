@@ -32,11 +32,38 @@ def walk(val):
         return val
     return val
 
+def normalize(ox):
+    """补齐字段，避免前端渲染崩溃：
+    - lesson.title 缺失 -> 单课单元用单元名，多课单元用 L1/L2...
+    - vocab 中文键 zh -> cn（前端统一读 cn）
+    - unit.name 缺失 -> Unit N
+    """
+    fixed_title = fixed_cn = 0
+    for key, lvl in ox.items():
+        for ui, unit in enumerate(lvl.get('units') or []):
+            uname = (unit.get('name') or '').strip() or ('Unit %d' % (ui + 1))
+            unit['name'] = uname
+            lessons = unit.get('lessons') or []
+            for li, les in enumerate(lessons):
+                if not (les.get('title') or '').strip():
+                    les['title'] = uname if len(lessons) == 1 else ('L%d' % (li + 1))
+                    fixed_title += 1
+                for w in (les.get('vocab') or []):
+                    if not w.get('cn') and w.get('zh'):
+                        w['cn'] = w['zh']
+                        fixed_cn += 1
+                    w.pop('zh', None)
+    print('补齐 lesson.title:', fixed_title, ' 归一化 vocab.cn:', fixed_cn)
+    return ox
+
 def main():
     data = json.load(open(SRC_JSON, encoding='utf-8'))
     # 过滤 oxford
     ox = {k: v for k, v in data.items() if k.startswith(KEEP_SERIES + '/')}
     print('过滤后键数:', len(ox), '示例键:', list(ox.keys())[:3])
+
+    # 字段归一化（必须在路径转换前，逻辑无关顺序但统一在此）
+    ox = normalize(ox)
 
     # 转换音频路径为相对
     ox = walk(ox)
