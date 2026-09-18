@@ -1,4 +1,8 @@
 _test_*.html
 _test_*.txt
 _shot*
+_s1.*
+_s2.*
 live_check.html
+__pycache__/
+*.pyc

@@ -53,8 +53,23 @@ def normalize(ox):
                         w['cn'] = w['zh']
                         fixed_cn += 1
                     w.pop('zh', None)
+            # 判断该单元是否为「共用词表」：多课且各课 vocab/sentences 完全一致
+            unit['shared_scope'] = detect_shared(lessons)
     print('补齐 lesson.title:', fixed_title, ' 归一化 vocab.cn:', fixed_cn)
     return ox
+
+def _sig(les):
+    v = [(w.get('en') or '', w.get('cn') or '') for w in (les.get('vocab') or [])]
+    s = list(les.get('sentences') or [])
+    return json.dumps({'v': v, 's': s}, ensure_ascii=False, sort_keys=True)
+
+def detect_shared(lessons):
+    """源资料按「单元」编排词汇句型时，同一单元下每课词表完全相同 → 标记共用。
+    真实逐课数据的级别（如 REL2/REL5）各课词表不同，不会标记。"""
+    if not lessons or len(lessons) < 2:
+        return False
+    first = _sig(lessons[0])
+    return all(_sig(le) == first for le in lessons[1:])
 
 def main():
     data = json.load(open(SRC_JSON, encoding='utf-8'))
