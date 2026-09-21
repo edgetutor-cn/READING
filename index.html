@@ -61,8 +61,8 @@
 
   .audio-bar { display:flex; align-items:center; gap:12px; background:white; border-radius:14px; padding:12px 18px;
     box-shadow:0 4px 12px rgba(0,0,0,.06); margin-bottom:18px; flex-wrap:wrap; }
-  .audio-bar .hint { font-size:12px; color:#9ca3af; }
-  .audio-bar select { padding:8px 12px; border-radius:10px; border:1px solid #e5e7eb; font-size:13px; outline:none; }
+  .audio-bar .hint { font-size:12px; color:#64748b; }
+  .audio-bar .hint b { color:#0e7490; }
   .play-all { margin-left:auto; padding:8px 16px; border:none; border-radius:10px; cursor:pointer;
     background:linear-gradient(135deg,#0891b2,#06b6d4); color:white; font-weight:600; font-size:13px; display:flex; align-items:center; gap:6px; }
 
@@ -189,8 +189,7 @@
 
     <div class="audio-bar">
       <i class="fa fa-volume-up" style="color:#0052CC"></i>
-      <select id="voiceSelect"><option>浏览器语音(兜底)</option></select>
-      <span class="hint">主发音由本地 Kokoro 神经网络生成，无需联网/密钥</span>
+      <span class="hint"><b>标准英式发音</b> · 本地 Kokoro 神经网络生成 · 离线可用，无需联网</span>
       <button class="play-all" id="playAllBtn"><i class="fa fa-play"></i> 朗读整课</button>
     </div>
 
@@ -464,7 +463,7 @@ function renderLesson(){
   document.getElementById('footNote').innerHTML =
     `数据：${cur.series}/${cur.level} · ${unit.name} · ${lessonLabel(les,cur.lesson,lessons.length)}`+
     (lessons.length>1?`（第 ${cur.lesson+1}/${lessons.length} 课）`:'')+`<br>`+
-    `发音：本地 Kokoro 神经网络 TTS（英式 bf_emma）· 离线可用 · 缺文件时自动回退浏览器语音`;
+    `发音：本地 Kokoro 神经网络 TTS（英式 bf_emma）· 离线可用 · 缺文件时自动回退系统英式语音`;
 }
 
 // === 播放逻辑：本地 mp3 优先，失败回退浏览器 Web Speech ===
@@ -482,18 +481,22 @@ function playAudio(url, text, btn){
   if(text) fallbackSpeak(text,btn);
 }
 function fallbackSpeak(text, btn){
-  if(!text) return;
+  if(!text || !('speechSynthesis' in window)) return;
   const u=new SpeechSynthesisUtterance(text);
   u.lang='en-GB'; u.rate=0.95;
+  const v=pickVoice(); if(v) u.voice=v;
   u.onend=()=>{ if(btn) btn.classList.remove('speaking'); };
+  u.onerror=()=>{ if(btn) btn.classList.remove('speaking'); };
   speechSynthesis.cancel(); speechSynthesis.speak(u);
 }
-function initVoices(){
-  const sel=document.getElementById('voiceSelect');
-  const vs=speechSynthesis.getVoices();
-  sel.innerHTML='<option value="">浏览器语音(兜底)</option>'+vs.map(v=>`<option value="${v.lang}">${v.name} (${v.lang})</option>`).join('');
+// 无声兜底：仅当本地 mp3 缺失/损坏时，自动选用系统英式语音，不向用户暴露任何选择器
+let _voices=[];
+function refreshVoices(){ if('speechSynthesis' in window) _voices=speechSynthesis.getVoices()||[]; }
+function pickVoice(){
+  if(!_voices.length) return null;
+  return _voices.find(v=>/^en[-_]GB/i.test(v.lang)) || _voices.find(v=>/^en/i.test(v.lang)) || _voices[0];
 }
-if('speechSynthesis' in window){ speechSynthesis.onvoiceschanged=initVoices; initVoices(); }
+if('speechSynthesis' in window){ speechSynthesis.onvoiceschanged=refreshVoices; refreshVoices(); }
 
 document.getElementById('backBtn').onclick=renderPortal;
 
