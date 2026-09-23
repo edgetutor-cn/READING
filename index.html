@@ -422,7 +422,7 @@ function renderLesson(){
   const prepBody=document.getElementById('prepBody');
   if(notice&&toggle&&prepBody){
     notice.classList.toggle('show', shared);
-    const nV=(les.vocab||[]).length, nS=(les.sentences||[]).length;
+    const nV=(les.vocab_core||[]).reduce((a,g)=>a+g.length,0)+(les.vocab_ext||[]).reduce((a,g)=>a+g.length,0), nS=(les.sentences||[]).length;
     const setOpen=(open)=>{
       prepBody.style.display=open?'':'none';
       toggle.classList.toggle('open', open);
