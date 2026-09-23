@@ -40,14 +40,24 @@ def main():
     local, remote_path = sys.argv[1], sys.argv[2]
     msg = sys.argv[3] if len(sys.argv) > 3 else 'update ' + remote_path
     tk = token()
-    cur = api('GET', f'/repos/{REPO}/contents/{remote_path}?ref={BRANCH}', tk=tk)
+    sha = None
+    try:
+        cur = api('GET', f'/repos/{REPO}/contents/{remote_path}?ref={BRANCH}', tk=tk)
+        sha = cur.get('sha')
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            sha = None  # 新文件：不带 sha 直接创建
+        else:
+            raise
     content = open(local, 'rb').read()
-    res = api('PUT', f'/repos/{REPO}/contents/{remote_path}', {
+    payload = {
         'message': msg,
         'content': base64.b64encode(content).decode(),
-        'sha': cur['sha'],
         'branch': BRANCH,
-    }, tk=tk)
+    }
+    if sha:
+        payload['sha'] = sha
+    res = api('PUT', f'/repos/{REPO}/contents/{remote_path}', payload, tk=tk)
     print('已提交:', res['commit']['sha'][:10], res['commit']['message'].splitlines()[0])
 
 
