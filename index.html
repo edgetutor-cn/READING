@@ -6,6 +6,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>EDGE Tutor · Reading牛津阅读（课前预习·课后复习）</title>
 <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+<link rel="preconnect" href="https://fastly.jsdelivr.net">
+<link rel="preconnect" href="https://testingcf.jsdelivr.net">
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
+<link rel="dns-prefetch" href="https://gcore.jsdelivr.net">
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body {
@@ -517,31 +521,79 @@ function buildVocabTier(container, chunks, label, icon, accent, defaultOpenFirst
   });
   container.appendChild(tier);
 }
-// 切课时把本课所有音频（生词/句型/课文）提前拉入浏览器缓存，点哪响哪、几乎零延迟
-function preloadLesson(les){
-  const a=les.audio||{}; const paths=[];
-  ['vocab_core','vocab_ext'].forEach(k=>{
-    (les[k]||[]).forEach(g=>g.forEach(w=>{ if(w&&w.audio) paths.push(w.audio); }));
+// === 音频加速：运行时探测最快 CDN 并缓存 ===
+// 当前音频源托管在 GitHub 仓库；GitHub Pages 国内常被墙/极慢，故页面加载时自动探测
+// 各 CDN 镜像响应速度，择优使用，并对失败做多源自动切换。
+const CDN_PROBE = [   // 仅 jsDelivr 镜像参与「自动择优」（国内可达、速度远胜 GitHub Pages）
+  'https://fastly.jsdelivr.net/gh/edgetutor-cn/READING@master/',
+  'https://testingcf.jsdelivr.net/gh/edgetutor-cn/READING@master/',
+  'https://cdn.jsdelivr.net/gh/edgetutor-cn/READING@master/',
+  'https://gcore.jsdelivr.net/gh/edgetutor-cn/READING@master/'
+];
+const CDN_FALLBACK = CDN_PROBE.concat([   // 播放兜底链：jsDelivr 全失败后，最后一试 GitHub Pages，再不行回退浏览器语音
+  'https://edgetutor-cn.github.io/READING/'
+]);
+let AUDIO_BASE = CDN_PROBE[0];   // 默认用最快的 jsDelivr 镜像；探测到更优源则自动升级
+const PROBE_FILE = 'reading_audio/oxford/REL1/U1/L1/vocab_0.mp3';
+function detectFastestCDN(){
+  const times = CDN_PROBE.map(base=>{
+    const t0 = performance.now();
+    const ctrl = new AbortController();
+    const to = setTimeout(()=>ctrl.abort(), 4500);
+    return fetch(base + PROBE_FILE, {method:'HEAD', cache:'no-store', signal:ctrl.signal})
+      .then(r=>{ clearTimeout(to); return r.ok ? performance.now()-t0 : Infinity; })
+      .catch(()=>{ clearTimeout(to); return Infinity; });
   });
-  (les.sentences||[]).forEach((s,i)=>{ const p=(a.sentences||[])[i]; if(p) paths.push(p); });
-  if(a.story) paths.push(a.story);
-  if(a.lesson) paths.push(a.lesson);
-  paths.forEach(p=>{ try{ const au=new Audio(p); au.preload='auto'; au.load(); }catch(e){} });
+  return Promise.all(times).then(rs=>{
+    let bi=-1, bt=Infinity;
+    rs.forEach((t,i)=>{ if(t<bt){ bt=t; bi=i; } });
+    if(bi>=0 && bt<Infinity) AUDIO_BASE = CDN_PROBE[bi];
+    window.__AUDIO_BASE = AUDIO_BASE;
+    console.log('[audio] 选定最快音频源:', AUDIO_BASE, 'RTT(ms)=', bt===Infinity?'全部超时':Math.round(bt));
+    return AUDIO_BASE;
+  });
 }
 
-// === 播放逻辑：本地 mp3 优先，失败回退浏览器 Web Speech ===
-let audioEl=null;
+// 持久缓存音频元素：首次加载后重复点击零延迟（不被 GC 回收）
+const _audioCache = new Map();
+function getAudio(url, base){
+  const key = base + '|' + url;
+  let au = _audioCache.get(key);
+  if(!au){ au = new Audio(); au.preload='auto'; au.src = base + url; _audioCache.set(key, au); }
+  return au;
+}
+
+// 切课时把本课音频提前拉入缓存（优先当前可见的第一组 + 课文），点哪响哪
+function preloadLesson(les){
+  const a=les.audio||{}; const paths=[];
+  const first=((les.vocab_core||[])[0]||[]);
+  first.forEach(w=>{ if(w&&w.audio) paths.push(w.audio); });
+  if(a.lesson) paths.push(a.lesson);
+  if(a.story) paths.push(a.story);
+  ['vocab_core','vocab_ext'].forEach((k,ki)=>{
+    (les[k]||[]).forEach((g,gi)=>{ if(ki===0&&gi===0) return; g.forEach(w=>{ if(w&&w.audio) paths.push(w.audio); }); });
+  });
+  (les.sentences||[]).forEach((s,i)=>{ const p=(a.sentences||[])[i]; if(p) paths.push(p); });
+  const base = AUDIO_BASE;
+  paths.forEach(p=>{ const key=base+'|'+p; if(!_audioCache.has(key)){ const au=new Audio(); au.preload='auto'; au.src=base+p; _audioCache.set(key, au); au.load(); } });
+}
+
+// === 播放逻辑：最快 CDN 优先，失败自动切换下一个源，最终回退浏览器语音 ===
 function playAudio(url, text, btn){
   if(btn){ document.querySelectorAll('.speak-btn.speaking').forEach(b=>b.classList.remove('speaking')); btn.classList.add('speaking'); }
   const stop=()=>{ if(btn) btn.classList.remove('speaking'); };
-  if(url){
-    if(audioEl) audioEl.pause();
-    audioEl=new Audio(url);
-    audioEl.onended=stop; audioEl.onerror=()=>{ stop(); if(text) fallbackSpeak(text,btn); };
-    audioEl.play().catch(()=>{ if(text) fallbackSpeak(text,btn); });
-    return;
-  }
-  if(text) fallbackSpeak(text,btn);
+  if(!url){ if(text) fallbackSpeak(text,btn); return; }
+  let startIdx = CDN_FALLBACK.indexOf(AUDIO_BASE); if(startIdx<0) startIdx=0;
+  const tryPlay=(i)=>{
+    const base = CDN_FALLBACK[i] || AUDIO_BASE;
+    const au = getAudio(url, base);
+    au.onended = stop;
+    au.onerror = ()=>{ if(i+1<CDN_FALLBACK.length) tryPlay(i+1); else { stop(); if(text) fallbackSpeak(text,btn); } };
+    try { au.currentTime = 0; } catch(e){}
+    const pr = au.play();
+    if(pr && pr.catch) pr.catch(()=>{ if(i+1<CDN_FALLBACK.length) tryPlay(i+1); else if(text) fallbackSpeak(text,btn); });
+  };
+  tryPlay(startIdx);
 }
 function fallbackSpeak(text, btn){
   if(!text || !('speechSynthesis' in window)) return;
@@ -565,6 +617,7 @@ document.getElementById('backBtn').onclick=renderPortal;
 
 async function boot(){
   // 数据已内嵌（相对路径），直接用于 GitHub Pages / 任意静态托管
+  detectFastestCDN();   // 后台探测最快音频源，不阻塞首屏
   if(typeof INLINE_DATA !== 'undefined' && INLINE_DATA){
     DATA = INLINE_DATA;
     renderPortal();
