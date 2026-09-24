@@ -160,6 +160,15 @@
   .story-box { background:linear-gradient(135deg,#f0fdfa,#ecfeff); border:1px solid #a5f3fc; border-radius:16px;
     padding:20px; font-size:14px; line-height:1.9; color:#0e7490; }
 
+  .more-text-btn { display:inline-flex; align-items:center; gap:6px; margin:14px 0 0; padding:9px 16px;
+    border:1px solid #cffafe; background:#ecfeff; color:#0e7490; border-radius:999px; cursor:pointer;
+    font-size:13px; font-weight:700; transition:.15s; }
+  .more-text-btn:hover { background:#cffafe; }
+  .full-text-box { display:none; margin-top:12px; padding:18px 20px; border-radius:16px;
+    background:#fffbeb; border:1px solid #fde68a; font-size:14.5px; line-height:2; color:#92400e;
+    white-space:pre-wrap; word-break:break-word; }
+  .full-text-box.open { display:block; }
+
   .note { margin-top:28px; font-size:12px; color:#9ca3af; text-align:center; line-height:1.8; }
   .note code { background:#f3f4f6; padding:2px 6px; border-radius:6px; color:#6b7280; }
   .err { background:#fef2f2; color:#b91c1c; padding:16px; border-radius:12px; font-size:13px; text-align:center; }
@@ -247,6 +256,8 @@
       <div class="module-note" id="reviewNote">听课文朗读、复习整课内容，把当天学的牢牢记住。</div>
       <div class="section-title" id="storyTitle"><span class="dot"></span>📚 课文摘要 Story</div>
       <div class="story-box" id="storyBox"></div>
+      <button class="more-text-btn" id="moreTextBtn" style="display:none"><i class="fa fa-file-text-o"></i> 查看更多原文</button>
+      <div class="full-text-box" id="fullTextBox"></div>
       <div class="section-title" id="lessonTitle"><span class="dot"></span>🎧 整课朗读 Lesson</div>
       <div class="lesson-audio" id="lessonAudioBox">
         <div class="la-icon"><i class="fa fa-headphones"></i></div>
@@ -268,6 +279,7 @@ const INLINE_DATA = {"oxford/REL2":{"series":"oxford","level":"REL2","units":[{"
 
 let DATA = null;
 let cur = { series:null, level:null, unit:null, lesson:null };
+let curLes = null;   // 当前课对象，供整课朗读暂停逻辑使用
 let sharedOpen = true;   // 「本单元共用词表」展开状态（跨课切换保持）
 
 // ===== 教材系列元数据：新增教材只需在此追加一项 + 在 reading_parsed_all.json 加对应系列键 =====
@@ -412,10 +424,15 @@ function renderLessonTabs(){
   renderLesson();
 }
 function renderLesson(){
+  // 切课复位整课朗读状态，避免旧音频残留
+  if(_lesAu){ try{_lesAu.pause();}catch(e){} }
+  _lesAu=null; _lesKey=null; _lesBtn=null;
+  ['playAllBtn','lessonPlayBtn'].forEach(id=>{ const b=document.getElementById(id); if(b) b.classList.remove('speaking'); });
   const lvl=levelObj(cur.series,cur.level); if(!lvl||!lvl.units||cur.unit==null||cur.lesson==null) return;
   const unit=lvl.units[cur.unit]; const lessons=unit.lessons||[];
   if(!lessons.length) return;
   const les=lessons[cur.lesson]||{};
+  curLes=les;
   const a=les.audio||{};
   const pb=document.getElementById('phonicsBox');
   if(les.phonics){ pb.innerHTML=`<div class="phonics-icon"><i class="fa fa-music"></i></div><div class="phonics-text">拼读重点：${les.phonics}</div>`; pb.style.display='flex'; }
@@ -465,10 +482,16 @@ function renderLesson(){
   });
   const sb=document.getElementById('storyBox');
   const st=document.getElementById('storyTitle');
-  if(les.story){ sb.style.display='block'; sb.textContent=les.story;
+  const mtb=document.getElementById('moreTextBtn');
+  const ftb=document.getElementById('fullTextBox');
+  if(les.story){ sb.style.display='block'; sb.textContent=les.story; sb.style.cursor='default'; sb.title='';
     if(st) st.style.display='flex';
-    sb.onclick=(e)=>playAudio(a.story, les.story, e.currentTarget); sb.style.cursor='pointer'; sb.title='点击朗读'; }
-  else { sb.style.display='none'; if(st) st.style.display='none'; }
+    // 课文文本区为纯展示，不绑定朗读（声音只由「播放整课」按钮触发）
+    mtb.style.display='inline-flex'; ftb.classList.remove('open'); ftb.textContent='';
+    mtb.onclick=()=>{ if(ftb.classList.contains('open')){ ftb.classList.remove('open'); mtb.innerHTML='<i class="fa fa-file-text-o"></i> 查看更多原文'; }
+      else { ftb.textContent=les.story; ftb.classList.add('open'); mtb.innerHTML='<i class="fa fa-angle-up"></i> 收起原文'; } };
+  }
+  else { sb.style.display='none'; if(st) st.style.display='none'; mtb.style.display='none'; ftb.classList.remove('open'); ftb.textContent=''; }
   // 朗读音频口径：源只有课题/主题文本的级别，音频即「课题朗读」，不得写成「整篇课文带读」
   const titleOnly = !!a.lesson && !!a.story && a.lesson===a.story;
   const lt=document.getElementById('lessonTitle');
@@ -477,14 +500,12 @@ function renderLesson(){
   if(lt) lt.innerHTML='<span class="dot"></span>'+(titleOnly?'🔊 本课课题朗读 Topic':'🎧 整课朗读 Lesson');
   if(laT) laT.textContent = titleOnly?'课题朗读音频':'整课朗读音频';
   if(laS) laS.textContent = titleOnly?'朗读本课的英文课题与主题，跟着读一遍':'老师带读整篇课文，可反复听';
-  if(lpb) lpb.innerHTML='<i class="fa fa-play"></i> '+(titleOnly?'播放课题':'播放整课');
-  if(pab) pab.innerHTML='<i class="fa fa-play"></i> '+(titleOnly?'朗读课题':'朗读整课');
+  if(lpb){ lpb.onclick=(e)=>toggleLessonPlay(e.currentTarget); setLesIcon(lpb,false); }
+  if(pab){ pab.onclick=(e)=>toggleLessonPlay(e.currentTarget); setLesIcon(pab,false); }
   const rn=document.getElementById('reviewNote');
   if(rn) rn.textContent = titleOnly
     ? '本课音频朗读「课题与主题」；生词与句型见上方「课前预习」（本单元共用）。'
     : '听课文朗读、复习整课内容，把当天学的牢牢记住。';
-  document.getElementById('playAllBtn').onclick=(e)=>playAudio(a.lesson||a.story, null, e.currentTarget);
-  document.getElementById('lessonPlayBtn').onclick=(e)=>playAudio(a.lesson||a.story, null, e.currentTarget);
   preloadLesson(les);  // 切课时预加载本课全部音频，点击即响几乎零延迟
   document.getElementById('footNote').innerHTML =
     `数据：${cur.series}/${cur.level} · ${unit.name} · ${lessonLabel(les,cur.lesson,lessons.length)}`+
@@ -579,6 +600,45 @@ function preloadLesson(les){
 }
 
 // === 播放逻辑：最快 CDN 优先，失败自动切换下一个源，最终回退浏览器语音 ===
+// === 整课朗读：播放/暂停切换（声音只由此按钮触发）===
+let _lesAu=null, _lesKey=null, _lesBtn=null;
+function setLesIcon(btn, playing){
+  if(!btn) return;
+  const aa=(curLes && curLes.audio)||{};
+  const titleOnly = !!(aa.lesson && aa.story && aa.lesson===aa.story);
+  const base = (btn.id==='playAllBtn') ? '朗读整课' : (titleOnly?'播放课题':'播放整课');
+  btn.innerHTML = playing ? '<i class="fa fa-pause"></i> 暂停' : '<i class="fa fa-play"></i> '+base;
+}
+function toggleLessonPlay(btn){
+  const aa=(curLes && curLes.audio)||{};
+  const url=aa.lesson||aa.story;
+  if(!url){ if(curLes && curLes.story) fallbackSpeak(curLes.story, btn); return; }
+  const key=AUDIO_BASE+'|'+url;
+  // 切换课程或尚无实例 → 重新播放
+  if(_lesKey!==key || !_lesAu){
+    if(_lesAu){ try{_lesAu.pause();}catch(e){} }
+    if(_lesBtn) _lesBtn.classList.remove('speaking');
+    const au=getAudio(url, AUDIO_BASE);
+    _lesAu=au; _lesKey=key; _lesBtn=btn;
+    btn.classList.add('speaking'); setLesIcon(btn,true);
+    au.onended=()=>{ if(_lesBtn) _lesBtn.classList.remove('speaking'); setLesIcon(_lesBtn,false); _lesAu=null; _lesKey=null; };
+    au.onerror=()=>{
+      let i=CDN_FALLBACK.indexOf(AUDIO_BASE); i=(i<0?0:i+1);
+      if(i<CDN_FALLBACK.length){ const nb=CDN_FALLBACK[i]; AUDIO_BASE=nb; const au2=getAudio(url,nb);
+        au2.onended=au.onended; au2.play().catch(()=>{}); _lesAu=au2; _lesKey=nb+'|'+url; }
+      else { if(_lesBtn) _lesBtn.classList.remove('speaking'); setLesIcon(_lesBtn,false);
+        if(curLes && curLes.story) fallbackSpeak(curLes.story, btn); }
+    };
+    try{ au.currentTime=0; }catch(e){}
+    const pr=au.play();
+    if(pr&&pr.catch) pr.catch(()=>{ au.onerror(); });
+    return;
+  }
+  // 同一课 → 暂停/继续切换
+  if(!_lesAu.paused){ _lesAu.pause(); setLesIcon(btn,false); }
+  else { _lesAu.play(); setLesIcon(btn,true); }
+}
+
 function playAudio(url, text, btn){
   if(btn){ document.querySelectorAll('.speak-btn.speaking').forEach(b=>b.classList.remove('speaking')); btn.classList.add('speaking'); }
   const stop=()=>{ if(btn) btn.classList.remove('speaking'); };
