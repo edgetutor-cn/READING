@@ -510,7 +510,7 @@ function renderLesson(){
   document.getElementById('footNote').innerHTML =
     `数据：${cur.series}/${cur.level} · ${unit.name} · ${lessonLabel(les,cur.lesson,lessons.length)}`+
     (lessons.length>1?`（第 ${cur.lesson+1}/${lessons.length} 课）`:'')+`<br>`+
-    `发音：本地 Kokoro 神经网络 TTS（英式 bf_emma）· 离线可用 · 缺文件时自动回退系统英式语音`;
+    `发音：本地 Kokoro 神经网络 TTS（英式 bf_emma）· 已播音频自动缓存·再听秒出 · 缺文件自动回退系统英式语音`;
 }
 
 // === 生词分组渲染 + 音频预加载 ===
@@ -542,65 +542,76 @@ function buildVocabTier(container, chunks, label, icon, accent, defaultOpenFirst
   });
   container.appendChild(tier);
 }
-// === 音频加速：运行时探测最快 CDN 并缓存 ===
-// 当前音频源托管在 GitHub 仓库；GitHub Pages 国内常被墙/极慢，故页面加载时自动探测
-// 各 CDN 镜像响应速度，择优使用，并对失败做多源自动切换。
-const CDN_PROBE = [   // 仅 jsDelivr 镜像参与「自动择优」（国内可达、速度远胜 GitHub Pages）
-  'https://fastly.jsdelivr.net/gh/edgetutor-cn/READING@master/',
-  'https://testingcf.jsdelivr.net/gh/edgetutor-cn/READING@master/',
+// === 音频加速：首响镜像探测 + blob 缓存(预热即零延迟) + Service Worker 跨会话持久 ===
+// 根因：音频托管在 GitHub/jsDelivr，国内首字节延迟 2~8 秒，纯前端无法消除"首字节"；
+// 对策：① 打开即并行探测各镜像，谁先响应用谁（不再写死最慢的 fastly）
+//       ② 切课时把整课音频全部 fetch 成 blob 缓存，点击即响（无网络等待）
+//       ③ Service Worker 把已拉过的音频缓存本地，下次/隔天打开直接秒出
+const MIRRORS = [
+  'https://testingcf.jsdelivr.net/gh/edgetutor-cn/READING@master/',  // 实测最快
+  'https://gcore.jsdelivr.net/gh/edgetutor-cn/READING@master/',
   'https://cdn.jsdelivr.net/gh/edgetutor-cn/READING@master/',
-  'https://gcore.jsdelivr.net/gh/edgetutor-cn/READING@master/'
+  'https://fastly.jsdelivr.net/gh/edgetutor-cn/READING@master/',
+  'https://edgetutor-cn.github.io/READING/'                         // 最后一试
 ];
-const CDN_FALLBACK = CDN_PROBE.concat([   // 播放兜底链：jsDelivr 全失败后，最后一试 GitHub Pages，再不行回退浏览器语音
-  'https://edgetutor-cn.github.io/READING/'
-]);
-let AUDIO_BASE = CDN_PROBE[0];   // 默认用最快的 jsDelivr 镜像；探测到更优源则自动升级
+let AUDIO_BASE = MIRRORS[0];
 const PROBE_FILE = 'reading_audio/oxford/REL1/U1/L1/vocab_0.mp3';
+
+// blob 缓存：相对路径 -> Promise<objectURL>，命中即瞬间返回（无网络等待）
+const _blobCache = new Map();
+const _audioEls = new Map();   // 复用 Audio 元素，避免反复 new
+function uniq(arr){ return [...new Set(arr)]; }
+
+function fetchBlob(rel){
+  if(_blobCache.has(rel)) return _blobCache.get(rel);
+  const order = uniq([AUDIO_BASE].concat(MIRRORS));
+  const p = (async()=>{
+    let lastErr;
+    for(const base of order){
+      try{
+        const ctrl=new AbortController();
+        const to=setTimeout(()=>ctrl.abort(), 7000);
+        const res=await fetch(base+rel, {signal:ctrl.signal, cache:'force-cache'});
+        clearTimeout(to);
+        if(!res.ok) throw new Error('http '+res.status);
+        return URL.createObjectURL(await res.blob());
+      }catch(e){ lastErr=e; }
+    }
+    throw lastErr || new Error('all mirrors failed');
+  })();
+  _blobCache.set(rel, p);
+  return p;
+}
+function warm(rel){ fetchBlob(rel).catch(()=>{}); }   // 预拉成 blob，不等待
+
+// 探测最快镜像：谁先响应就用谁，立即生效并重预热当前课
 function detectFastestCDN(){
-  const times = CDN_PROBE.map(base=>{
-    const t0 = performance.now();
-    const ctrl = new AbortController();
-    const to = setTimeout(()=>ctrl.abort(), 4500);
-    return fetch(base + PROBE_FILE, {method:'HEAD', cache:'no-store', signal:ctrl.signal})
-      .then(r=>{ clearTimeout(to); return r.ok ? performance.now()-t0 : Infinity; })
-      .catch(()=>{ clearTimeout(to); return Infinity; });
-  });
-  return Promise.all(times).then(rs=>{
-    let bi=-1, bt=Infinity;
-    rs.forEach((t,i)=>{ if(t<bt){ bt=t; bi=i; } });
-    if(bi>=0 && bt<Infinity) AUDIO_BASE = CDN_PROBE[bi];
-    window.__AUDIO_BASE = AUDIO_BASE;
-    console.log('[audio] 选定最快音频源:', AUDIO_BASE, 'RTT(ms)=', bt===Infinity?'全部超时':Math.round(bt));
-    return AUDIO_BASE;
+  let won=false;
+  MIRRORS.forEach(base=>{
+    const ctrl=new AbortController();
+    const to=setTimeout(()=>ctrl.abort(), 3000);
+    fetch(base+PROBE_FILE, {method:'HEAD', cache:'no-store', signal:ctrl.signal})
+      .then(r=>{ clearTimeout(to); if(r.ok && !won){ won=true; AUDIO_BASE=base; window.__AUDIO_BASE=base; console.log('[audio] 选定最快镜像:', base); if(curLes) preloadLesson(curLes); } })
+      .catch(()=>clearTimeout(to));
   });
 }
 
-// 持久缓存音频元素：首次加载后重复点击零延迟（不被 GC 回收）
-const _audioCache = new Map();
-function getAudio(url, base){
-  const key = base + '|' + url;
-  let au = _audioCache.get(key);
-  if(!au){ au = new Audio(); au.preload='auto'; au.src = base + url; _audioCache.set(key, au); }
-  return au;
-}
-
-// 切课时把本课音频提前拉入缓存（优先当前可见的第一组 + 课文），点哪响哪
+// 切课时把整课音频全部预拉成 blob（小文件优先、整课靠后），点哪响哪
 function preloadLesson(les){
-  const a=les.audio||{}; const paths=[];
-  const first=((les.vocab_core||[])[0]||[]);
-  first.forEach(w=>{ if(w&&w.audio) paths.push(w.audio); });
-  if(a.lesson) paths.push(a.lesson);
-  if(a.story) paths.push(a.story);
-  ['vocab_core','vocab_ext'].forEach((k,ki)=>{
-    (les[k]||[]).forEach((g,gi)=>{ if(ki===0&&gi===0) return; g.forEach(w=>{ if(w&&w.audio) paths.push(w.audio); }); });
-  });
+  const a=les.audio||{};
+  const paths=[];
+  (les.vocab_core||[]).forEach(g=>g.forEach(w=>{ if(w&&w.audio) paths.push(w.audio); }));
+  (les.vocab_ext||[]).forEach(g=>g.forEach(w=>{ if(w&&w.audio) paths.push(w.audio); }));
   (les.sentences||[]).forEach((s,i)=>{ const p=(a.sentences||[])[i]; if(p) paths.push(p); });
-  const base = AUDIO_BASE;
-  paths.forEach(p=>{ const key=base+'|'+p; if(!_audioCache.has(key)){ const au=new Audio(); au.preload='auto'; au.src=base+p; _audioCache.set(key, au); au.load(); } });
+  if(a.story) paths.push(a.story);
+  if(a.lesson) paths.push(a.lesson);   // 整课音频最大，最后预载
+  let idx=0; const CONC=6;
+  const next=()=>{ if(idx>=paths.length) return; const r=paths[idx++]; warm(r).finally(next); };
+  for(let k=0;k<CONC;k++) next();
 }
 
-// === 播放逻辑：最快 CDN 优先，失败自动切换下一个源，最终回退浏览器语音 ===
-// === 整课朗读：播放/暂停切换（声音只由此按钮触发）===
+// === 播放逻辑：blob 缓存命中即秒播，失败自动切换镜像，最终回退浏览器语音 ===
+// === 整课朗读：播放/暂停切换（声音只由「播放整课」按钮触发）===
 let _lesAu=null, _lesKey=null, _lesBtn=null;
 function setLesIcon(btn, playing){
   if(!btn) return;
@@ -609,51 +620,46 @@ function setLesIcon(btn, playing){
   const base = (btn.id==='playAllBtn') ? '朗读整课' : (titleOnly?'播放课题':'播放整课');
   btn.innerHTML = playing ? '<i class="fa fa-pause"></i> 暂停' : '<i class="fa fa-play"></i> '+base;
 }
-function toggleLessonPlay(btn){
+async function toggleLessonPlay(btn){
   const aa=(curLes && curLes.audio)||{};
-  const url=aa.lesson||aa.story;
-  if(!url){ if(curLes && curLes.story) fallbackSpeak(curLes.story, btn); return; }
-  const key=AUDIO_BASE+'|'+url;
-  // 切换课程或尚无实例 → 重新播放
-  if(_lesKey!==key || !_lesAu){
+  const rel=aa.lesson||aa.story;
+  if(!rel){ if(curLes && curLes.story) fallbackSpeak(curLes.story, btn); return; }
+  const key=AUDIO_BASE+'|'+rel;
+  if(_lesKey!==key || !_lesAu){          // 切换课程或尚无实例 → 重新播放
     if(_lesAu){ try{_lesAu.pause();}catch(e){} }
     if(_lesBtn) _lesBtn.classList.remove('speaking');
-    const au=getAudio(url, AUDIO_BASE);
-    _lesAu=au; _lesKey=key; _lesBtn=btn;
     btn.classList.add('speaking'); setLesIcon(btn,true);
-    au.onended=()=>{ if(_lesBtn) _lesBtn.classList.remove('speaking'); setLesIcon(_lesBtn,false); _lesAu=null; _lesKey=null; };
-    au.onerror=()=>{
-      let i=CDN_FALLBACK.indexOf(AUDIO_BASE); i=(i<0?0:i+1);
-      if(i<CDN_FALLBACK.length){ const nb=CDN_FALLBACK[i]; AUDIO_BASE=nb; const au2=getAudio(url,nb);
-        au2.onended=au.onended; au2.play().catch(()=>{}); _lesAu=au2; _lesKey=nb+'|'+url; }
-      else { if(_lesBtn) _lesBtn.classList.remove('speaking'); setLesIcon(_lesBtn,false);
-        if(curLes && curLes.story) fallbackSpeak(curLes.story, btn); }
-    };
-    try{ au.currentTime=0; }catch(e){}
-    const pr=au.play();
-    if(pr&&pr.catch) pr.catch(()=>{ au.onerror(); });
+    try{
+      const objUrl=await fetchBlob(rel);
+      let au=_audioEls.get(rel);
+      if(!au){ au=new Audio(); _audioEls.set(rel,au); }
+      au.src=objUrl;
+      _lesAu=au; _lesKey=key; _lesBtn=btn;
+      au.onended=()=>{ if(_lesBtn) _lesBtn.classList.remove('speaking'); setLesIcon(_lesBtn,false); _lesAu=null; _lesKey=null; };
+      try{ au.currentTime=0; }catch(e){}
+      await au.play();
+    }catch(e){
+      if(_lesBtn) _lesBtn.classList.remove('speaking'); setLesIcon(btn,false);
+      if(curLes && curLes.story) fallbackSpeak(curLes.story, btn);
+    }
     return;
   }
-  // 同一课 → 暂停/继续切换
-  if(!_lesAu.paused){ _lesAu.pause(); setLesIcon(btn,false); }
+  if(!_lesAu.paused){ _lesAu.pause(); setLesIcon(btn,false); }   // 同一课 → 暂停/继续
   else { _lesAu.play(); setLesIcon(btn,true); }
 }
 
-function playAudio(url, text, btn){
+async function playAudio(url, text, btn){
   if(btn){ document.querySelectorAll('.speak-btn.speaking').forEach(b=>b.classList.remove('speaking')); btn.classList.add('speaking'); }
   const stop=()=>{ if(btn) btn.classList.remove('speaking'); };
   if(!url){ if(text) fallbackSpeak(text,btn); return; }
-  let startIdx = CDN_FALLBACK.indexOf(AUDIO_BASE); if(startIdx<0) startIdx=0;
-  const tryPlay=(i)=>{
-    const base = CDN_FALLBACK[i] || AUDIO_BASE;
-    const au = getAudio(url, base);
-    au.onended = stop;
-    au.onerror = ()=>{ if(i+1<CDN_FALLBACK.length) tryPlay(i+1); else { stop(); if(text) fallbackSpeak(text,btn); } };
-    try { au.currentTime = 0; } catch(e){}
-    const pr = au.play();
-    if(pr && pr.catch) pr.catch(()=>{ if(i+1<CDN_FALLBACK.length) tryPlay(i+1); else if(text) fallbackSpeak(text,btn); });
-  };
-  tryPlay(startIdx);
+  try{
+    const objUrl=await fetchBlob(url);
+    let au=_audioEls.get(url);
+    if(!au){ au=new Audio(); _audioEls.set(url,au); }
+    au.src=objUrl; au.onended=stop;
+    try{ au.currentTime=0; }catch(e){}
+    await au.play();
+  }catch(e){ stop(); if(text) fallbackSpeak(text,btn); }
 }
 function fallbackSpeak(text, btn){
   if(!text || !('speechSynthesis' in window)) return;
@@ -675,9 +681,16 @@ if('speechSynthesis' in window){ speechSynthesis.onvoiceschanged=refreshVoices; 
 
 document.getElementById('backBtn').onclick=renderPortal;
 
+function registerAudioSW(){
+  if(!('serviceWorker' in navigator)) return;
+  if(location.protocol!=='https:' && location.hostname!=='localhost' && location.hostname!=='127.0.0.1') return;
+  window.addEventListener('load', ()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); });
+}
+
 async function boot(){
   // 数据已内嵌（相对路径），直接用于 GitHub Pages / 任意静态托管
-  detectFastestCDN();   // 后台探测最快音频源，不阻塞首屏
+  detectFastestCDN();   // 后台探测最快镜像，谁先响应用谁（不阻塞首屏）
+  registerAudioSW();    // 注册 Service Worker：已拉过的音频本地缓存，跨会话秒出
   if(typeof INLINE_DATA !== 'undefined' && INLINE_DATA){
     DATA = INLINE_DATA;
     renderPortal();
