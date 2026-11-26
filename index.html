@@ -622,14 +622,14 @@ let _lesAu=null, _lesKey=null, _lesBtn=null;
 function setLesIcon(btn, playing){
   if(!btn) return;
   const aa=(curLes && curLes.audio)||{};
-  const titleOnly = !!(aa.lesson && aa.story && aa.lesson===aa.story);
-  const base = (btn.id==='playAllBtn') ? '听读本课' : (titleOnly?'播放课题':'播放整课');
+  const titleOnly = !curLes || curLes.audio_mode!=='existing';
+  const base = (btn.id==='playAllBtn') ? '听读本课' : (titleOnly?'播放预习':'播放整课');
   btn.innerHTML = playing ? '<i class="fa fa-pause"></i> 暂停' : '<i class="fa fa-play"></i> '+base;
 }
 async function toggleLessonPlay(btn){
   const aa=(curLes && curLes.audio)||{};
   const rel=aa.lesson||aa.story;
-  if(!rel){ if(curLes) fallbackSpeak([curLes.preview?.title||'',...(curLes.sentences||[])].join('. '),btn); return; }
+  if(!rel){ if(curLes) fallbackSpeak([curLes.preview?.title||'',...(curLes.vocab_core||[]).flat().map(w=>w.en)].join('. '),btn); return; }
   const key=AUDIO_BASE+'|'+rel;
   if(_lesKey!==key || !_lesAu){          // 切换课程或尚无实例 → 重新播放
     if(_lesAu){ try{_lesAu.pause();}catch(e){} }
