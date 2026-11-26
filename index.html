@@ -202,14 +202,14 @@
   .lesson-play-btn.speaking { animation:pulse .6s infinite; }
 
 #lessonTabs{align-items:center;gap:12px}#lessonSelect{font:inherit;color:#123b73;background:white;border:2px solid #b7d1ff;border-radius:12px;padding:13px 40px 13px 14px;min-height:48px;width:min(100%,640px);max-width:100%;cursor:pointer}#lessonSelect:focus{outline:3px solid #9bc9ff;outline-offset:2px}#lessonPreview{background:#eef6ff;border:1px solid #c8ddff;border-radius:16px;padding:18px 20px;margin-bottom:18px}#lessonPreview h2{font-size:21px;color:#0647a6;margin:0 0 8px}.preview-caption{font-size:13px;color:#66758a}#unitReference{margin-top:18px;border:1px solid #dae3f0;border-radius:12px;padding:14px}#unitReference summary{cursor:pointer;color:#1454a2;font-weight:700}.reference-grid{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}.reference-grid button{border:1px solid #d5e3f5;background:#f8fbff;border-radius:8px;padding:9px;cursor:pointer;color:#164a80}@media(max-width:600px){#lessonTabs{display:block}#lessonTabs label{display:block;margin-bottom:7px}#lessonSelect{width:100%}.tab-row{flex-wrap:wrap}}
-</style>
+#audioStatus{font-size:14px;line-height:1.5;color:#25618d;min-height:22px;margin:-6px 0 12px;text-align:center}#lessonAudioBox{scroll-margin-top:16px}</style>
 </head>
 <body>
 <div class="wrap">
   <div class="top">
     <div class="brand"><img src="logo.png" alt="EDGE Tutor"><h1>Reading 牛津阅读</h1></div>
     <div class="sub">美国小学分级读物 · 课前预习生词句型 + 课后复习课文朗读（英式发音）</div>
-    <div class="pill">本地神经网络 TTS · 离线可用 · 对标有道发音</div>
+    <div class="pill">预录英式音频 · 分词分句跟读 · 已播音频缓存</div>
   </div>
 
   <!-- 教材中心门户 -->
@@ -224,7 +224,7 @@
 
     <div class="audio-bar">
       <i class="fa fa-volume-up" style="color:#0052CC"></i>
-      <span class="hint"><b>标准英式发音</b> · 本地 Kokoro 神经网络生成 · 离线可用，无需联网</span>
+      <span class="hint"><b>英式听读</b> · 预录英式音频 · 词间450ms / 句间800ms · 已播音频缓存</span>
       <button class="play-all" id="playAllBtn"><i class="fa fa-play"></i> 听读本课</button>
     </div>
 
@@ -238,7 +238,7 @@
     <!-- 模块一：课前预习 -->
     <div class="module">
       <div class="module-head preview"><span class="mh-icon">📘</span> 课前预习 · 上课前自己看</div>
-      <div class="module-note">先跟读生词和重点句型，带着内容去上课，效果更好。</div>
+      <div class="module-note">点击“词句跟读”，依次听核心词和句子；词间留短停顿，句后留跟读时间。拓展词可单独点读。</div>
       <!-- 单元共用词表提示（源按单元编排时显示） -->
       <div class="shared-notice" id="sharedNotice">
         <div class="sn-text">本单元词句参考库：供各课复习，不代表每节课都新增以下全部词句。</div>
@@ -300,6 +300,7 @@ function metaOf(s){ return SERIES_META[s] || { name:s, color:'#0052CC', icon:'�
 
 // === 教材中心门户 ===
 function renderPortal(){
+  stopReadingAudio();
   document.getElementById('viewer').style.display='none';
   const box=document.getElementById('portal'); box.innerHTML=''; box.style.display='grid';
   seriesKeys().forEach(s=>{
@@ -426,6 +427,7 @@ function renderPreview(les,unit){
 }
 
 function renderLesson(){
+  stopReadingAudio();
   // 切课复位整课朗读状态，避免旧音频残留
   if(_lesAu){ try{_lesAu.pause();}catch(e){} }
   _lesAu=null; _lesKey=null; _lesBtn=null;
@@ -516,7 +518,7 @@ function renderLesson(){
   document.getElementById('footNote').innerHTML =
     `数据：${cur.series}/${cur.level} · ${unit.name} · ${lessonLabel(les,cur.lesson,lessons.length)}`+
     (lessons.length>1?`（第 ${cur.lesson+1}/${lessons.length} 课）`:'')+`<br>`+
-    `发音：本地 Kokoro 神经网络 TTS（英式 bf_emma）· 已播音频自动缓存·再听秒出 · 缺文件自动回退系统英式语音`;
+    `发音：预录英式音频；词句跟读保留自然停顿。缺录音时会标明设备语音补读，音色依设备而异。`;
 }
 
 // === 生词分组渲染 + 音频预加载 ===
@@ -569,26 +571,22 @@ const _audioEls = new Map();   // 复用 Audio 元素，避免反复 new
 function uniq(arr){ return [...new Set(arr)]; }
 
 function fetchBlob(rel){
-  if(_blobCache.has(rel)) return _blobCache.get(rel);
-  const order = uniq([AUDIO_BASE].concat(MIRRORS));
-  const p = (async()=>{
-    let lastErr;
-    for(const base of order){
-      try{
-        const ctrl=new AbortController();
-        const to=setTimeout(()=>ctrl.abort(), 7000);
-        const res=await fetch(base+rel, {signal:ctrl.signal, cache:'force-cache'});
-        clearTimeout(to);
-        if(!res.ok) throw new Error('http '+res.status);
-        return URL.createObjectURL(await res.blob());
-      }catch(e){ lastErr=e; }
-    }
-    throw lastErr || new Error('all mirrors failed');
-  })();
-  _blobCache.set(rel, p);
-  return p;
+ if(_blobCache.has(rel))return _blobCache.get(rel);
+ const origin=new URL('./',location.href).href;
+ const order=uniq([origin,AUDIO_BASE].concat(MIRRORS)).slice(0,3);
+ const p=new Promise((resolve,reject)=>{
+  let done=false,failed=0;const controllers=[],timers=[];
+  const finish=(err,value)=>{if(done)return;done=true;controllers.forEach(c=>c.abort());timers.forEach(clearTimeout);err?reject(err):resolve(value);};
+  order.forEach((base,i)=>{timers.push(setTimeout(async()=>{
+   if(done)return;const ctrl=new AbortController();controllers.push(ctrl);
+   const timeout=setTimeout(()=>ctrl.abort(),4200);
+   try{const response=await fetch(base+rel,{signal:ctrl.signal,cache:'force-cache'});if(!response.ok)throw new Error('audio '+response.status);const blob=await response.blob();if(!blob.size)throw new Error('empty audio');clearTimeout(timeout);if(!done)finish(null,URL.createObjectURL(blob));}
+   catch(e){clearTimeout(timeout);failed++;if(failed===order.length)finish(e);}
+  },i===0?0:i===1?180:900));});
+ });
+ _blobCache.set(rel,p);p.catch(()=>{if(_blobCache.get(rel)===p)_blobCache.delete(rel);});return p;
 }
-function warm(rel){ fetchBlob(rel).catch(()=>{}); }   // 预拉成 blob，不等待
+function warm(rel){fetchBlob(rel).catch(()=>{});}
 
 // 探测最快镜像：谁先响应就用谁，立即生效并重预热当前课
 function detectFastestCDN(){
@@ -603,79 +601,119 @@ function detectFastestCDN(){
 }
 
 // 切课时把整课音频全部预拉成 blob（小文件优先、整课靠后），点哪响哪
-function preloadLesson(les){
-  const a=les.audio||{};
-  const paths=[];
-  (les.vocab_core||[]).forEach(g=>g.forEach(w=>{ if(w&&w.audio) paths.push(w.audio); }));
-  (les.vocab_ext||[]).forEach(g=>g.forEach(w=>{ if(w&&w.audio) paths.push(w.audio); }));
-  (les.sentences||[]).forEach((s,i)=>{ const p=(a.sentences||[])[i]; if(p) paths.push(p); });
-  if(a.story) paths.push(a.story);
-  if(a.lesson) paths.push(a.lesson);   // 整课音频最大，最后预载
-  let idx=0; const CONC=6;
-  const next=()=>{ if(idx>=paths.length) return; const r=paths[idx++]; warm(r).finally(next); };
-  for(let k=0;k<CONC;k++) next();
-}
-
 // === 播放逻辑：blob 缓存命中即秒播，失败自动切换镜像，最终回退浏览器语音 ===
 // === 整课朗读：播放/暂停切换（声音只由「播放整课」按钮触发）===
 let _lesAu=null, _lesKey=null, _lesBtn=null;
-function setLesIcon(btn, playing){
-  if(!btn) return;
-  const aa=(curLes && curLes.audio)||{};
-  const titleOnly = !curLes || curLes.audio_mode!=='existing';
-  const base = (btn.id==='playAllBtn') ? '听读本课' : (titleOnly?'播放预习':'播放整课');
-  btn.innerHTML = playing ? '<i class="fa fa-pause"></i> 暂停' : '<i class="fa fa-play"></i> '+base;
+// Existing, prerecorded British audio. No speech generation on the network path.
+let _speechToken=0, _studyRun=null, _warmEpoch=0, _speechUtterance=null;
+function audioNotice(text){
+ let el=document.getElementById('audioStatus');
+ if(!el){el=document.createElement('div');el.id='audioStatus';el.setAttribute('role','status');el.setAttribute('aria-live','polite');document.getElementById('lessonTabs').after(el);}
+ el.textContent=text||'';
+}
+function stopReadingAudio(){
+ _speechToken++;_warmEpoch++;
+ if(_studyRun&&_studyRun.timer)clearTimeout(_studyRun.timer);
+ if(_studyRun&&_studyRun.btn)setLesIcon(_studyRun.btn,false);
+ _studyRun=null;
+ _audioEls.forEach(a=>{a.pause();a.onended=null;a.onerror=null;});
+ if('speechSynthesis' in window){speechSynthesis.cancel();speechSynthesis.resume();}
+ _speechUtterance=null;
+ document.querySelectorAll('.speaking').forEach(b=>b.classList.remove('speaking'));
+ audioNotice('');
+}
+function spokenText(text){
+ return String(text||'').replace(/（[^）]*）|\([^)]*[\u3400-\u9fff][^)]*\)/g,'')
+ .replace(/<[^>]*>/g,'').replace(/_+/g,' blank ').replace(/\s*\/\s*/g,'. ')
+ .replace(/[\u3400-\u9fff]/g,'').replace(/\s+([.,?!])/g,'$1').replace(/([.!?])\s*\./g,'$1').replace(/\s+/g,' ').trim();
+}
+function setLesIcon(btn,playing){
+ if(!btn)return;
+ const original=curLes&&curLes.audio&&curLes.audio.lesson;
+ const base=btn.id==='playAllBtn'?'词句跟读':(original?(curLes.audio_mode==='existing'?'播放原音频':'播放课题'):'播放预习');
+ btn.innerHTML='<i class="fa fa-'+(playing?'pause':'play')+'"></i> '+(playing?'暂停':base);
+ btn.setAttribute('aria-pressed',playing?'true':'false');
+}
+function studyItems(les){
+ const items=[],seen=new Set();
+ (les.vocab_core||[]).forEach(g=>g.forEach(w=>{const k=String(w.en||'').trim().toLowerCase();if(k&&!seen.has(k)){seen.add(k);items.push({text:w.en,url:w.audio||'',gap:450,kind:'word'});}}));
+ (les.sentences||[]).forEach((s,i)=>{const t=typeof s==='string'?s:s.en;if(t)items.push({text:t,url:((les.audio||{}).sentences||[])[i]||'',gap:800,kind:'sentence'});});
+ return items;
+}
+function preloadLesson(les){
+ const epoch=++_warmEpoch,items=studyItems(les);
+ // Only the first three clips: rapid lesson changes must not launch whole-unit downloads.
+ items.slice(0,3).forEach((x,i)=>{if(x.url)setTimeout(()=>{if(epoch===_warmEpoch)warm(x.url);},i*80);});
+}
+function queueNext(run){
+ if(run!==_studyRun||run.token!==_speechToken||run.paused)return;
+ if(run.index>=run.items.length){setLesIcon(run.btn,false);_studyRun=null;audioNotice('本次听读完成，可再次播放。');return;}
+ const item=run.items[run.index];
+ run.items.slice(run.index+1,run.index+3).forEach(x=>{if(x.url)warm(x.url);});
+ audioNotice((run.index+1)+' / '+run.items.length+' · '+item.text);
+ const ended=()=>{
+  if(run!==_studyRun||run.token!==_speechToken)return;
+  run.index++;run.audio=null;run.utterance=null;run.inGap=true;
+  if(!run.paused)run.timer=setTimeout(()=>{run.inGap=false;queueNext(run);},item.gap);
+ };
+ playReadingItem(item,run.token,run.btn,ended,run);
+}
+async function playReadingItem(item,token,btn,ended,run){
+ if(btn)btn.classList.add('speaking');
+ if(item.url){
+  try{
+   const blob=await fetchBlob(item.url);
+   if(token!==_speechToken||run&&run!==_studyRun)return;
+   let au=_audioEls.get(item.url);if(!au){au=new Audio();_audioEls.set(item.url,au);}
+   au.src=blob;au.playbackRate=1;au.currentTime=0;
+   if(run)run.audio=au;
+   au.onended=()=>{if(token===_speechToken){if(btn)btn.classList.remove('speaking');ended();}};
+   au.onerror=()=>{if(token===_speechToken)speakReadingFallback(item.text,token,btn,ended,run);};
+   if(run&&run.paused)return;
+   await au.play();return;
+  }catch(e){if(token!==_speechToken)return;}
+ }
+ if(token===_speechToken)speakReadingFallback(item.text,token,btn,ended,run);
+}
+function speakReadingFallback(text,token,btn,ended,run){
+ if(run)run.audio=null;
+ const cleaned=spokenText(text);
+ if(!cleaned||!('speechSynthesis' in window)){audioNotice('这段音频暂时无法播放，请稍后重试。');if(run)setLesIcon(run.btn,false);if(btn)btn.classList.remove('speaking');return;}
+ const u=new SpeechSynthesisUtterance(cleaned);u.lang='en-GB';u.rate=.95;
+ const voice=pickVoice();if(voice)u.voice=voice;
+ _speechUtterance=u;if(run)run.utterance=u;
+ audioNotice('使用设备语音补读 · '+text);
+ u.onend=()=>{if(token===_speechToken){if(btn)btn.classList.remove('speaking');ended();}};
+ u.onerror=e=>{if(token===_speechToken&&e.error!=='interrupted'&&e.error!=='canceled'){audioNotice('设备补读不可用，请重新点读或稍后重试。');if(run)setLesIcon(run.btn,false);}};
+ if(token!==_speechToken)return;
+ speechSynthesis.speak(u);if(run&&run.paused)speechSynthesis.pause();
 }
 async function toggleLessonPlay(btn){
-  const aa=(curLes && curLes.audio)||{};
-  const rel=aa.lesson||aa.story;
-  if(!rel){ if(curLes) fallbackSpeak([curLes.preview?.title||'',...(curLes.vocab_core||[]).flat().map(w=>w.en)].join('. '),btn); return; }
-  const key=AUDIO_BASE+'|'+rel;
-  if(_lesKey!==key || !_lesAu){          // 切换课程或尚无实例 → 重新播放
-    if(_lesAu){ try{_lesAu.pause();}catch(e){} }
-    if(_lesBtn) _lesBtn.classList.remove('speaking');
-    btn.classList.add('speaking'); setLesIcon(btn,true);
-    try{
-      const objUrl=await fetchBlob(rel);
-      let au=_audioEls.get(rel);
-      if(!au){ au=new Audio(); _audioEls.set(rel,au); }
-      au.src=objUrl;
-      _lesAu=au; _lesKey=key; _lesBtn=btn;
-      au.onended=()=>{ if(_lesBtn) _lesBtn.classList.remove('speaking'); setLesIcon(_lesBtn,false); _lesAu=null; _lesKey=null; };
-      try{ au.currentTime=0; }catch(e){}
-      await au.play();
-    }catch(e){
-      if(_lesBtn) _lesBtn.classList.remove('speaking'); setLesIcon(btn,false);
-      if(curLes && curLes.story) fallbackSpeak(curLes.story, btn);
-    }
-    return;
-  }
-  if(!_lesAu.paused){ _lesAu.pause(); setLesIcon(btn,false); }   // 同一课 → 暂停/继续
-  else { _lesAu.play(); setLesIcon(btn,true); }
+ if(_studyRun&&_studyRun.btn===btn){
+  const run=_studyRun;run.paused=!run.paused;setLesIcon(btn,!run.paused);
+  if(run.paused){if(run.timer)clearTimeout(run.timer);if(run.audio)run.audio.pause();if(run.utterance&&'speechSynthesis' in window)speechSynthesis.pause();audioNotice('已暂停 · 再次点击继续');}
+  else if(run.audio){run.audio.play().catch(()=>audioNotice('请再次点击播放。'));}
+  else if(run.utterance&&'speechSynthesis' in window&&speechSynthesis.paused){speechSynthesis.resume();}
+  else if(run.inGap){run.inGap=false;queueNext(run);}
+  else if(!run.loading){queueNext(run);}
+  return;
+ }
+ stopReadingAudio();
+ let items=studyItems(curLes||{});
+ if(btn.id==='lessonPlayBtn'){
+  const aa=(curLes||{}).audio||{};
+  if(aa.lesson||aa.story)items=[{url:aa.lesson||aa.story,text:(curLes.preview||{}).title||curLes.title,gap:0,kind:'original'}];
+ }
+ if(!items.length){audioNotice('本课暂无可播放的词句。');return;}
+ const run={btn,items,index:0,token:_speechToken,paused:false,audio:null,timer:null,inGap:false,loading:true};
+ _studyRun=run;setLesIcon(btn,true);queueNext(run);
 }
+async function playAudio(url,text,btn){
+ stopReadingAudio();const token=_speechToken;audioNotice('正在播放 · '+text);
+ playReadingItem({url,text},token,btn,()=>audioNotice(''),null);
+}
+function fallbackSpeak(text,btn){playAudio('',text,btn);}
 
-async function playAudio(url, text, btn){
-  if(btn){ document.querySelectorAll('.speak-btn.speaking').forEach(b=>b.classList.remove('speaking')); btn.classList.add('speaking'); }
-  const stop=()=>{ if(btn) btn.classList.remove('speaking'); };
-  if(!url){ if(text) fallbackSpeak(text,btn); return; }
-  try{
-    const objUrl=await fetchBlob(url);
-    let au=_audioEls.get(url);
-    if(!au){ au=new Audio(); _audioEls.set(url,au); }
-    au.src=objUrl; au.onended=stop;
-    try{ au.currentTime=0; }catch(e){}
-    await au.play();
-  }catch(e){ stop(); if(text) fallbackSpeak(text,btn); }
-}
-function fallbackSpeak(text, btn){
-  if(!text || !('speechSynthesis' in window)) return;
-  const u=new SpeechSynthesisUtterance(text);
-  u.lang='en-GB'; u.rate=0.95;
-  const v=pickVoice(); if(v) u.voice=v;
-  u.onend=()=>{ if(btn) btn.classList.remove('speaking'); };
-  u.onerror=()=>{ if(btn) btn.classList.remove('speaking'); };
-  speechSynthesis.cancel(); speechSynthesis.speak(u);
-}
 // 无声兜底：仅当本地 mp3 缺失/损坏时，自动选用系统英式语音，不向用户暴露任何选择器
 let _voices=[];
 function refreshVoices(){ if('speechSynthesis' in window) _voices=speechSynthesis.getVoices()||[]; }
